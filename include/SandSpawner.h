@@ -20,7 +20,7 @@
 class SandSpawner {
 public:
     static constexpr int DEFAULT_EVERY_N = 2;
-    static constexpr int DEFAULT_BURST   = 10;
+    static constexpr int DEFAULT_BURST   = 25;
 
     // Warm gold/ochre sand colours (0x00RRGGBB).
     static constexpr std::array<uint32_t, 8> DEFAULT_PALETTE = {

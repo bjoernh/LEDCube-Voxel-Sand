@@ -45,9 +45,7 @@ struct Gravity {
 // ──────────────────────────────────────────────────────────────────────────
 class SandEngine {
 public:
-    /// strictOneStep: if true, each particle advances at most one cell per tick
-    ///   (no cascade flow).  Default false = cascade / fluid-like behaviour.
-    explicit SandEngine(bool strictOneStep = false);
+    explicit SandEngine();
 
     // ── Configuration ──────────────────────────────────────────────────────
 
@@ -80,7 +78,6 @@ private:
     [[nodiscard]] bool tryPlace(int nx, int ny, int nz, uint32_t color) noexcept;
 
     // ── State ───────────────────────────────────────────────────────────────
-    const bool             strictOneStep_;
     VoxelGrid              grid_;
     Gravity                gravity_{};
     std::vector<SlideDir>  slideDirs_;   ///< diagonal candidates, sorted by dot(v,g) ↓

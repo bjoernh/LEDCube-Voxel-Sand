@@ -5,9 +5,8 @@
 
 // ──────────────────────────────────────────────────────────────────────────
 
-SandEngine::SandEngine(bool strictOneStep)
-    : strictOneStep_(strictOneStep)
-    , grid_()
+SandEngine::SandEngine()
+    : grid_()
     , gravity_{0, -1, 0}
 {
     rebuildSlideDirs();
@@ -63,12 +62,7 @@ void SandEngine::rebuildSlideDirs() {
 bool SandEngine::tryPlace(int nx, int ny, int nz, uint32_t color) noexcept {
     if (!grid_.inBounds(nx, ny, nz))       return false;
     if (grid_.getNext(nx, ny, nz) != 0)    return false;   // already claimed this tick
-
-    if (strictOneStep_) {
-        // Also reject cells that are occupied in the current buffer
-        // to prevent cascade moves within one tick.
-        if (grid_.getCurrent(nx, ny, nz) != 0) return false;
-    }
+    if (grid_.getCurrent(nx, ny, nz) != 0) return false;
 
     grid_.setNext(nx, ny, nz, color);
     return true;
