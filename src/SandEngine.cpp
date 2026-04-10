@@ -1,38 +1,13 @@
 #include "SandEngine.h"
+#include "Hash.h"
 
 #include <algorithm>   // std::sort
-#include <cstdint>
-
-// ──────────────────────────────────────────────────────────────────────────
-//  Compile-time behaviour switch
-//
-//  STRICT_ONE_STEP = false  (default)
-//    tryPlace() checks next_ for conflicts.  A voxel vacated earlier in the
-//    same tick is immediately available, allowing cascade / fluid flow.
-//
-//  STRICT_ONE_STEP = true
-//    tryPlace() ALSO checks current_.  Each particle can only advance one
-//    cell per tick, regardless of sweep order.  Looks more granular.
-// ──────────────────────────────────────────────────────────────────────────
-static constexpr bool STRICT_ONE_STEP = false;
-
-// ──────────────────────────────────────────────────────────────────────────
-//  Fast integer hash  (Wang hash, avalanche)
-//  Used to pick a per-particle starting slide index without any allocation.
-// ──────────────────────────────────────────────────────────────────────────
-static inline uint32_t wangHash(uint32_t v) noexcept {
-    v = (v ^ 61u) ^ (v >> 16u);
-    v *= 9u;
-    v ^= v >> 4u;
-    v *= 0x27d4eb2du;
-    v ^= v >> 15u;
-    return v;
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 
-SandEngine::SandEngine()
-    : grid_()
+SandEngine::SandEngine(bool strictOneStep)
+    : strictOneStep_(strictOneStep)
+    , grid_()
     , gravity_{0, -1, 0}
 {
     rebuildSlideDirs();
@@ -89,7 +64,7 @@ bool SandEngine::tryPlace(int nx, int ny, int nz, uint32_t color) noexcept {
     if (!grid_.inBounds(nx, ny, nz))       return false;
     if (grid_.getNext(nx, ny, nz) != 0)    return false;   // already claimed this tick
 
-    if constexpr (STRICT_ONE_STEP) {
+    if (strictOneStep_) {
         // Also reject cells that are occupied in the current buffer
         // to prevent cascade moves within one tick.
         if (grid_.getCurrent(nx, ny, nz) != 0) return false;

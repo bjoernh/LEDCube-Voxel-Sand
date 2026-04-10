@@ -7,6 +7,7 @@
 #include <led-matrix.h>
 
 #include "SandEngine.h"
+#include "SandSpawner.h"
 #include "FaceMapper.h"
 
 using namespace rgb_matrix;
@@ -17,17 +18,7 @@ using TP    = std::chrono::time_point<Clock>;
 //  Configuration
 // ──────────────────────────────────────────────────────────────────────────
 
-static constexpr int TARGET_FPS      = 60;
-static constexpr int SPAWN_EVERY_N   = 2;    // spawn a burst every N frames
-static constexpr int SPAWN_BURST     = 20;    // grains per burst
-
-// Sand colour palette (warm gold/ochre tones, 0x00RRGGBB)
-static constexpr uint32_t PALETTE[] = {
-    0xD4AF37, 0xC2A050, 0xE8C870, 0xB8935A,
-    0xF0D060, 0xA08040, 0xCC9944, 0xE0B855,
-};
-static constexpr int PALETTE_SIZE =
-    static_cast<int>(sizeof(PALETTE) / sizeof(PALETTE[0]));
+static constexpr int TARGET_FPS = 100;
 
 // ──────────────────────────────────────────────────────────────────────────
 //  Graceful shutdown
@@ -57,7 +48,7 @@ static RGBMatrix* createMatrix() {
 
 
     RuntimeOptions rt;
-    rt.gpio_slowdown = 4;   // Raspberry Pi 4; reduce to 2-3 for Pi 3
+    rt.gpio_slowdown = 3;   // Raspberry Pi 4; reduce to 2-3 for Pi 3
     rt.do_gpio_init = true;
 
     RGBMatrix* m = RGBMatrix::CreateFromOptions(opts, rt);
@@ -66,33 +57,6 @@ static RGBMatrix* createMatrix() {
                              "           Check wiring and run as root (sudo).\n");
     }
     return m;
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-//  Sand spawner
-//
-//  "Pours" grains from the top-centre of the cube.  A small random spread
-//  prevents a single tall column and makes the heap look more natural.
-//  Uses a deterministic per-frame pattern so the spawner itself is bias-free.
-// ──────────────────────────────────────────────────────────────────────────
-
-static void spawnBurst(SandEngine& engine, int frame) {
-    // Spawn along the top edge of the front face (z=63, y=63).
-    // x is spread across the full width using a hash so grains are
-    // distributed rather than clustered.
-    for (int i = 0; i < SPAWN_BURST; ++i) {
-        // Wang hash of (frame, i) mapped to [0, 63]
-        uint32_t h = static_cast<uint32_t>(frame * 2'246'822'519u + i * 2'654'435'761u);
-        h ^= h >> 16; h *= 0x45d9f3b; h ^= h >> 16;
-        const int sx = static_cast<int>(h % GRID_SIZE);
-        const int sy = GRID_SIZE - 1;   // top row
-        const int sz = GRID_SIZE - 1;   // front face (z=63)
-        const uint32_t color = PALETTE[(frame + i) % PALETTE_SIZE];
-
-        if (engine.getGrid().getCurrent(sx, sy, sz) == 0) {
-            engine.spawnSand(sx, sy, sz, color);
-        }
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -134,7 +98,8 @@ int main(int argc, char* argv[]) {
     SandEngine engine;
     engine.setGravity({0, -1, 0});   // gravity pointing down (-y)
 
-    FaceMapper mapper(engine.getGrid());
+    FaceMapper  mapper(engine.getGrid());
+    SandSpawner spawner;
 
     // ── Frame-rate cap setup ─────────────────────────────────────────────
     static constexpr auto FRAME_DUR =
@@ -149,10 +114,8 @@ int main(int argc, char* argv[]) {
     // ── Main loop ────────────────────────────────────────────────────────
     while (g_running) {
 
-        // 1. Spawn new sand grains every SPAWN_EVERY_N frames.
-        if (frame % SPAWN_EVERY_N == 0) {
-            spawnBurst(engine, frame);
-        }
+        // 1. Spawn new sand grains.
+        spawner.tick(engine, frame);
 
         // 2. Advance physics one tick.
         engine.update();

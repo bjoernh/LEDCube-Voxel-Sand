@@ -60,6 +60,7 @@ set_target_properties(rgbmatrix PROPERTIES
 add_executable(sand_cube
     src/VoxelGrid.cpp
     src/SandEngine.cpp
+    src/SandSpawner.cpp
     src/FaceMapper.cpp
     src/main.cpp
 )
