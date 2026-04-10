@@ -48,7 +48,7 @@ static RGBMatrix* createMatrix() {
 
 
     RuntimeOptions rt;
-    rt.gpio_slowdown = 3;   // Raspberry Pi 4; reduce to 2-3 for Pi 3
+    rt.gpio_slowdown = 4;   // Raspberry Pi 4; reduce to 2-3 for Pi 3
     rt.do_gpio_init = true;
 
     RGBMatrix* m = RGBMatrix::CreateFromOptions(opts, rt);

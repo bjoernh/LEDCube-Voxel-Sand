@@ -70,6 +70,12 @@ private:
     /// Load per-panel rotations from config file.
     void loadConfig(const char* path);
 
+    /// Draw a centred label string on a panel, routing each pixel through
+    /// writePixel so the panel rotation is applied.
+    void drawLabel(rgb_matrix::FrameCanvas* canvas,
+                   int panel, const char* text,
+                   uint8_t r, uint8_t g, uint8_t b) const;
+
     const VoxelGrid& grid_;
     std::array<int, 6> rotation_{};   // degrees CW per panel, default 0
 };
