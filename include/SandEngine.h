@@ -36,12 +36,7 @@ struct Gravity {
 //  Rule C  – Stay in place   : if all slide attempts fail.
 //
 //  Double-buffer semantics
-//  ───────────────────────
-//  Decisions are made by reading current_; placements write to next_.
-//  tryPlace() checks next_ for conflicts (not current_): a cell vacated
-//  earlier in the same tick is visible as empty, which produces the
-//  cascade / flow effect common in visual sand simulators.
-//  Set STRICT_ONE_STEP = true in SandEngine.cpp to disable cascades.
+//
 // ──────────────────────────────────────────────────────────────────────────
 class SandEngine {
 public:

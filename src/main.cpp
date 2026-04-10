@@ -9,6 +9,7 @@
 #include "SandEngine.h"
 #include "SandSpawner.h"
 #include "FaceMapper.h"
+#include "KeyboardTilt.h"
 
 using namespace rgb_matrix;
 using Clock = std::chrono::steady_clock;
@@ -98,8 +99,12 @@ int main(int argc, char* argv[]) {
     SandEngine engine;
     engine.setGravity({0, -1, 0});   // gravity pointing down (-y)
 
+    KeyboardTilt tilt;               // WASD tilts gravity; r resets
+
     FaceMapper  mapper(engine.getGrid());
     SandSpawner spawner;
+
+    Gravity lastGravity = engine.getGravity();
 
     // ── Frame-rate cap setup ─────────────────────────────────────────────
     static constexpr auto FRAME_DUR =
@@ -113,6 +118,15 @@ int main(int argc, char* argv[]) {
 
     // ── Main loop ────────────────────────────────────────────────────────
     while (g_running) {
+
+        // 0. Apply any orientation change from the keyboard / IMU.
+        {
+            const Gravity g = tilt.getGravity();
+            if (g.dx != lastGravity.dx || g.dy != lastGravity.dy || g.dz != lastGravity.dz) {
+                engine.setGravity(g);
+                lastGravity = g;
+            }
+        }
 
         // 1. Spawn new sand grains.
         spawner.tick(engine, frame);

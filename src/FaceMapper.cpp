@@ -193,27 +193,26 @@ static const uint8_t FONT4x5[26][5] = {
     { 0xF,0x1,0x6,0x8,0xF }, // Z
 };
 
-void FaceMapper::drawLabel(rgb_matrix::FrameCanvas* canvas,
-                           int panel, const char* text,
-                           uint8_t r, uint8_t g, uint8_t b) const {
-    const int len    = static_cast<int>(std::strlen(text));
-    const int totalW = len * 4 + (len - 1);   // 4px char + 1px gap
-    int ox           = (GRID_SIZE - totalW) / 2;
-    const int oy     = (GRID_SIZE - 5) / 2;
-    const uint32_t color =
-        (static_cast<uint32_t>(r) << 16) |
-        (static_cast<uint32_t>(g) <<  8) |
-         static_cast<uint32_t>(b);
+static void drawChar(rgb_matrix::FrameCanvas* canvas, int panelOx,
+                     int ox, int oy, char ch,
+                     uint8_t r, uint8_t g, uint8_t b) {
+    if (ch < 'A' || ch > 'Z') return;
+    const uint8_t* glyph = FONT4x5[ch - 'A'];
+    for (int row = 0; row < 5; ++row)
+        for (int col = 0; col < 4; ++col)
+            if (glyph[row] & (0x8u >> col))
+                canvas->SetPixel(panelOx + ox + col, oy + row, r, g, b);
+}
 
-    for (int i = 0; i < len; ++i, ox += 5) {
-        const char ch = text[i];
-        if (ch < 'A' || ch > 'Z') continue;
-        const uint8_t* glyph = FONT4x5[ch - 'A'];
-        for (int row = 0; row < 5; ++row)
-            for (int col = 0; col < 4; ++col)
-                if (glyph[row] & (0x8u >> col))
-                    writePixel(canvas, panel, ox + col, oy + row, color);
-    }
+static void drawString(rgb_matrix::FrameCanvas* canvas, int panel,
+                       const char* text, uint8_t r, uint8_t g, uint8_t b) {
+    const int len     = static_cast<int>(std::strlen(text));
+    const int totalW  = len * 4 + (len - 1);   // 4px char + 1px gap
+    int ox            = (GRID_SIZE - totalW) / 2;
+    const int oy      = (GRID_SIZE - 5) / 2;
+    const int panelOx = panel * GRID_SIZE;
+    for (int i = 0; i < len; ++i, ox += 5)
+        drawChar(canvas, panelOx, ox, oy, text[i], r, g, b);
 }
 
 // ── Test pattern ───────────────────────────────────────────────────────────
@@ -265,7 +264,8 @@ void FaceMapper::renderTestPattern(rgb_matrix::FrameCanvas* canvas) const {
         // Top-left corner: yellow
         writePixel(canvas, p, 0, 0, 0xFFFF00);
 
-        // Face name — routed through writePixel so rotation is applied
-        drawLabel(canvas, p, f.name, 255, 255, 255);
+        // Face name — drawn directly (bypasses rotation intentionally so text
+        // is always readable; adjust rotation until the L-marker is correct)
+        drawString(canvas, p, f.name, 255, 255, 255);
     }
 }

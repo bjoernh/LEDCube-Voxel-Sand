@@ -62,6 +62,7 @@ add_executable(sand_cube
     src/SandEngine.cpp
     src/SandSpawner.cpp
     src/FaceMapper.cpp
+    src/KeyboardTilt.cpp
     src/main.cpp
 )
 
