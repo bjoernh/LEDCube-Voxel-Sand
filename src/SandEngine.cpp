@@ -7,7 +7,10 @@
 
 SandEngine::SandEngine()
     : grid_()
-    , gravity_{0, -1, 0}
+    , gravity_{0.0f, -1.0f, 0.0f}
+    , primary_dx_{0}
+    , primary_dy_{-1}
+    , primary_dz_{0}
 {
     rebuildSlideDirs();
 }
@@ -34,25 +37,45 @@ void SandEngine::setGravity(Gravity g) {
 void SandEngine::rebuildSlideDirs() {
     slideDirs_.clear();
 
+    // Determine the primary discrete direction based on highest dot product
+    int best_dx = 0, best_dy = 0, best_dz = 0;
+    float max_dot = -1e9f;
+    for (int dx = -1; dx <= 1; ++dx) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dz = -1; dz <= 1; ++dz) {
+                if (dx == 0 && dy == 0 && dz == 0) continue;
+                float dot = dx * gravity_.x + dy * gravity_.y + dz * gravity_.z;
+                if (dot > max_dot) {
+                    max_dot = dot;
+                    best_dx = dx;
+                    best_dy = dy;
+                    best_dz = dz;
+                }
+            }
+        }
+    }
+    primary_dx_ = best_dx;
+    primary_dy_ = best_dy;
+    primary_dz_ = best_dz;
+
     for (int dx = -1; dx <= 1; ++dx)
     for (int dy = -1; dy <= 1; ++dy)
     for (int dz = -1; dz <= 1; ++dz) {
         if (dx == 0 && dy == 0 && dz == 0) continue;
-        // Skip pure-gravity direction
-        if (dx == gravity_.dx && dy == gravity_.dy && dz == gravity_.dz) continue;
+        // Skip primary direction
+        if (dx == primary_dx_ && dy == primary_dy_ && dz == primary_dz_) continue;
         // Must have downward component
-        const int dot = dx*gravity_.dx + dy*gravity_.dy + dz*gravity_.dz;
-        if (dot > 0) {
+        const float dot = dx * gravity_.x + dy * gravity_.y + dz * gravity_.z;
+        if (dot > 0.0f) {
             slideDirs_.push_back({dx, dy, dz});
         }
     }
 
-    // Prefer more-downward diagonals (higher dot product) so piles
-    // form under the particle rather than far to the side.
+    // Prefer more-downward diagonals (higher dot product)
     std::sort(slideDirs_.begin(), slideDirs_.end(),
         [this](const SlideDir& a, const SlideDir& b) {
-            const int dA = a.dx*gravity_.dx + a.dy*gravity_.dy + a.dz*gravity_.dz;
-            const int dB = b.dx*gravity_.dx + b.dy*gravity_.dy + b.dz*gravity_.dz;
+            const float dA = a.dx * gravity_.x + a.dy * gravity_.y + a.dz * gravity_.z;
+            const float dB = b.dx * gravity_.x + b.dy * gravity_.y + b.dz * gravity_.z;
             return dA > dB;
         });
 }
@@ -102,9 +125,9 @@ void SandEngine::update() {
         if (color == 0) continue;
 
         // ── Rule A : primary gravity step ─────────────────────────────────
-        const int tx = x + gravity_.dx;
-        const int ty = y + gravity_.dy;
-        const int tz = z + gravity_.dz;
+        const int tx = x + primary_dx_;
+        const int ty = y + primary_dy_;
+        const int tz = z + primary_dz_;
 
         if (tryPlace(tx, ty, tz, color)) continue;
 

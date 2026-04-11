@@ -15,9 +15,9 @@
 //    {1,  0,  0}  →  falling toward +x
 // ──────────────────────────────────────────────────────────────────────────
 struct Gravity {
-    int dx = 0;
-    int dy = -1;
-    int dz = 0;
+    float x = 0.0f;
+    float y = -1.0f;
+    float z = 0.0f;
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -75,6 +75,9 @@ private:
     // ── State ───────────────────────────────────────────────────────────────
     VoxelGrid              grid_;
     Gravity                gravity_{};
+    int                    primary_dx_{0};
+    int                    primary_dy_{-1};
+    int                    primary_dz_{0};
     std::vector<SlideDir>  slideDirs_;   ///< diagonal candidates, sorted by dot(v,g) ↓
     uint32_t               frameCount_{0};
 };

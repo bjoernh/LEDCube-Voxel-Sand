@@ -8,8 +8,6 @@
 
 // ──────────────────────────────────────────────────────────────────────────
 
-static int clamp1(int v) { return std::max(-1, std::min(1, v)); }
-
 // ──────────────────────────────────────────────────────────────────────────
 
 KeyboardTilt::KeyboardTilt() {
@@ -33,29 +31,45 @@ KeyboardTilt::~KeyboardTilt() {
 }
 
 Gravity KeyboardTilt::getGravity() const noexcept {
-    return { tiltX_.load(std::memory_order_relaxed),
-             -1,
-             tiltZ_.load(std::memory_order_relaxed) };
+    return Gravity{
+        tiltX_.load(std::memory_order_relaxed),
+        -1.0f,
+        tiltZ_.load(std::memory_order_relaxed)
+    };
 }
 
 void KeyboardTilt::inputLoop() {
     using namespace std::chrono_literals;
 
     while (running_.load(std::memory_order_relaxed)) {
-        char c{};
-        if (::read(STDIN_FILENO, &c, 1) == 1) {
-            switch (c) {
-                case 'w': tiltZ_.store(clamp1(tiltZ_.load() + 1)); break;
-                case 's': tiltZ_.store(clamp1(tiltZ_.load() - 1)); break;
-                case 'a': tiltX_.store(clamp1(tiltX_.load() - 1)); break;
-                case 'd': tiltX_.store(clamp1(tiltX_.load() + 1)); break;
-                case 'r': tiltX_.store(0); tiltZ_.store(0);        break;
-                default:  break;
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(STDIN_FILENO, &rfds);
+        struct timeval tv = {0, 10000}; // Wait up to 10ms for input
+
+        if (select(STDIN_FILENO + 1, &rfds, nullptr, nullptr, &tv) > 0) {
+            char c;
+            if (read(STDIN_FILENO, &c, 1) == 1) {
+                float tx = tiltX_.load(std::memory_order_relaxed);
+                float tz = tiltZ_.load(std::memory_order_relaxed);
+
+                switch (c) {
+                    case 'w': tz = std::min(tz + 0.1f, 1.0f); break;
+                    case 's': tz = std::max(tz - 0.1f, -1.0f); break;
+                    case 'd': tx = std::min(tx + 0.1f, 1.0f); break;
+                    case 'a': tx = std::max(tx - 0.1f, -1.0f); break;
+                    case 'r': tx = 0.0f; tz = 0.0f; break;
+                    default: break;
+                }
+
+                tiltX_.store(tx, std::memory_order_relaxed);
+                tiltZ_.store(tz, std::memory_order_relaxed);
+
+                const Gravity g = getGravity();
+                std::printf("[Tilt] gravity = {%+.1f, %+.1f, %+.1f}\n",
+                            g.x, g.y, g.z);
+                std::fflush(stdout);
             }
-            const Gravity g = getGravity();
-            std::printf("[Tilt] gravity = {%+d, %+d, %+d}\n",
-                        g.dx, g.dy, g.dz);
-            std::fflush(stdout);
         }
         std::this_thread::sleep_for(8ms);   // ~125 Hz poll, negligible CPU
     }

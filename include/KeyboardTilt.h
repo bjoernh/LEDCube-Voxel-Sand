@@ -18,7 +18,7 @@
 //
 //  Resulting gravity
 //  ─────────────────
-//    { tiltX, -1, tiltZ }
+//    { tiltX, -1.0f, tiltZ }
 //
 //  The terminal is put into raw non-blocking mode for the lifetime of
 //  this object and restored on destruction.
@@ -37,8 +37,8 @@ public:
 private:
     void inputLoop();
 
-    std::atomic<int>  tiltX_{0};
-    std::atomic<int>  tiltZ_{0};
+    std::atomic<float> tiltX_{0.0f};
+    std::atomic<float> tiltZ_{0.0f};
     std::atomic<bool> running_{true};
     std::thread       thread_;
     struct termios    savedTermios_{};

@@ -122,7 +122,7 @@ int main(int argc, char* argv[]) {
         // 0. Apply any orientation change from the keyboard / IMU.
         {
             const Gravity g = tilt.getGravity();
-            if (g.dx != lastGravity.dx || g.dy != lastGravity.dy || g.dz != lastGravity.dz) {
+            if (g.x != lastGravity.x || g.y != lastGravity.y || g.z != lastGravity.z) {
                 engine.setGravity(g);
                 lastGravity = g;
             }
