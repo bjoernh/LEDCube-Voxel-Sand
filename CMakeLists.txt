@@ -15,6 +15,12 @@ include_directories(${Boost_INCLUDE_DIR})
 # Protobuf is required by matrixapplication
 find_package(Protobuf REQUIRED)
 
+# Ensure Homebrew lib path is on the linker search path (needed for Imlib2
+# which matrixapplication links as a bare -lImlib2 without an -L prefix)
+if(APPLE)
+    link_directories(/opt/homebrew/lib)
+endif()
+
 # Eigen is used by the IMU helper (Eigen::Vector3f)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(EIGEN3 REQUIRED eigen3)
