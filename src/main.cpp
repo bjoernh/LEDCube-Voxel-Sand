@@ -1,24 +1,21 @@
-#include "AppTemplate.h"
+#include "SandCube.h"
+
 #include <string>
-#include <iostream>
 #include <unistd.h>
 
-int main(int argc, char *argv[]) {
-    // DEFAULTSERVERURI is typically defined in the matrixapplication headers
-    std::string serverUri = DEFAULTSERVERURI; 
-
-    // Basic argument parsing
+int main(int argc, char* argv[]) {
+    std::string serverUri = DEFAULTSERVERURI;
     if (argc > 1) {
         serverUri = argv[1];
     }
 
-    // Instantiate and start our custom application logic
-    AppTemplate app(serverUri);
+    SandCube app(serverUri);
     app.start();
-    
-    // The application logic runs in its own thread from the libmatrixapplication framework.
-    // The main thread simply waits.
-    while(1) sleep(2);
-    
+
+    // libmatrixapplication runs the loop() in its own thread — keep main alive.
+    while (true) {
+        sleep(2);
+    }
+
     return 0;
 }
