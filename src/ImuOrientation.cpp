@@ -4,7 +4,10 @@
 #include <cmath>
 
 ImuOrientation::ImuOrientation() {
-    imu_.init();
+    // Mpu6050 constructor already calls init() which opens the I2C device
+    // and starts the background refresh thread.  A second init() would
+    // start a second thread that races on the same I2C file descriptor,
+    // garbling axis readings.
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -27,7 +30,7 @@ Gravity ImuOrientation::getGravity() const noexcept {
 
     const float mag2 = a.squaredNorm();
     if (mag2 < 1e-6f) {
-        return Gravity{0.0f, -1.0f, 0.0f};
+        return Gravity{0.0f, 0.0f, 1.0f};
     }
 
     const float inv = 1.0f / std::sqrt(mag2);

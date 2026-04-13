@@ -7,10 +7,10 @@
 
 SandEngine::SandEngine()
     : grid_()
-    , gravity_{0.0f, -1.0f, 0.0f}
+    , gravity_{0.0f, 0.0f, 1.0f}
     , primary_dx_{0}
-    , primary_dy_{-1}
-    , primary_dz_{0}
+    , primary_dy_{0}
+    , primary_dz_{1}
 {
     rebuildSlideDirs();
 }

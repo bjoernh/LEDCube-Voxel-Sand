@@ -1,5 +1,7 @@
 #include "SandCube.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 
@@ -14,11 +16,12 @@ static inline Color unpackColor(uint32_t c) noexcept {
 
 // ──────────────────────────────────────────────────────────────────────────
 
-SandCube::SandCube(std::string serverUri)
+SandCube::SandCube(std::string serverUri, bool imuDebug)
     : CubeApplication(60, serverUri, "SandCube")
     , engine_()
     , spawner_(SandSpawner::DEFAULT_EVERY_N, SandSpawner::DEFAULT_BURST)
     , imu_()
+    , imuDebug_(imuDebug)
 {
     std::cout << "SandCube initialised. Connecting to: " << serverUri << std::endl;
 
@@ -78,6 +81,20 @@ bool SandCube::loop() {
     // 5. Render the six outer faces of the voxel grid.
     renderSurface();
 
+    // 6. IMU debug: show a red dot on the face the gravity vector points at,
+    //    mirroring how ImuTest uses getCubeAccIntersect().
+    if (imuDebug_) {
+        const float ax = lastGravity_.x, ay = lastGravity_.y, az = lastGravity_.z;
+        const float maxAbs = std::max({std::fabs(ax), std::fabs(ay), std::fabs(az)});
+        if (maxAbs > 1e-6f) {
+            const float s = 1.0f / maxAbs;
+            const int cx = static_cast<int>(ax * s * 33.0f) + 33;
+            const int cy = static_cast<int>(ay * s * 33.0f) + 33;
+            const int cz = static_cast<int>(az * s * 33.0f) + 33;
+            setPixel3D(cx, cy, cz, Color(255, 0, 0));
+        }
+    }
+
     render();
     ++frame_;
     return true;
@@ -93,33 +110,40 @@ bool SandCube::loop() {
 // ──────────────────────────────────────────────────────────────────────────
 void SandCube::renderSurface() {
     const VoxelGrid& grid = engine_.getGrid();
-    constexpr int MAX = CUBEMAXINDEX;   // 63
+    constexpr int MAX = CUBEMAXINDEX;           // 63
+    constexpr int VMAX = VIRTUALCUBEMAXINDEX;   // 65
 
-    auto place = [&](int x, int y, int z) {
-        const uint32_t c = grid.getCurrent(x, y, z);
+    // Map grid coordinates (0–63) to virtual cube coordinates that
+    // setPixel3D expects.  The face axis must hit the virtual boundary
+    // (0 or VMAX) so setPixel3D routes it to the correct screen.
+    // The two free axes map grid [0..63] → virtual [1..64] so they
+    // land on physical panel pixels [0..63].
+    auto place = [&](int gx, int gy, int gz,
+                     int vx, int vy, int vz) {
+        const uint32_t c = grid.getCurrent(gx, gy, gz);
         if (c != 0) {
-            setPixel3D(x, y, z, unpackColor(c));
+            setPixel3D(vx, vy, vz, unpackColor(c));
         }
     };
 
-    // Top (y = MAX) and bottom (y = 0) faces
+    // Face y = 0 (screen 0 – front) and y = MAX (screen 2 – back)
     for (int z = 0; z <= MAX; ++z)
         for (int x = 0; x <= MAX; ++x) {
-            place(x, MAX, z);
-            place(x, 0,   z);
+            place(x, 0,   z,  x + 1, 0,    z + 1);
+            place(x, MAX, z,  x + 1, VMAX, z + 1);
         }
 
-    // Front (z = MAX) and back (z = 0) faces
+    // Face z = MAX (screen 5 – bottom) and z = 0 (screen 4 – top)
     for (int y = 0; y <= MAX; ++y)
         for (int x = 0; x <= MAX; ++x) {
-            place(x, y, MAX);
-            place(x, y, 0);
+            place(x, y, MAX,  x + 1, y + 1, VMAX);
+            place(x, y, 0,    x + 1, y + 1, 0);
         }
 
-    // Left (x = 0) and right (x = MAX) faces
+    // Face x = 0 (screen 3 – left) and x = MAX (screen 1 – right)
     for (int y = 0; y <= MAX; ++y)
         for (int z = 0; z <= MAX; ++z) {
-            place(0,   y, z);
-            place(MAX, y, z);
+            place(0,   y, z,  0,    y + 1, z + 1);
+            place(MAX, y, z,  VMAX, y + 1, z + 1);
         }
 }

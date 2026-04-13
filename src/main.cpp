@@ -5,11 +5,17 @@
 
 int main(int argc, char* argv[]) {
     std::string serverUri = DEFAULTSERVERURI;
-    if (argc > 1) {
-        serverUri = argv[1];
+    bool imuDebug = false;
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--imu-debug") {
+            imuDebug = true;
+        } else {
+            serverUri = argv[i];
+        }
     }
 
-    SandCube app(serverUri);
+    SandCube app(serverUri, imuDebug);
     app.start();
 
     // libmatrixapplication runs the loop() in its own thread — keep main alive.
