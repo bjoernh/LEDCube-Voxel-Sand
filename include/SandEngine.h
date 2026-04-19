@@ -1,24 +1,10 @@
 #pragma once
 
+#include "Gravity.h"
 #include "VoxelGrid.h"
 #include <vector>
 #include <array>
 #include <cstdint>
-
-// ──────────────────────────────────────────────────────────────────────────
-//  Gravity
-//
-//  Discrete 3-D gravity vector.  Each component must be in {-1, 0, 1}.
-//  Examples:
-//    {0, -1,  0}  →  falling downward  (default)
-//    {0,  1,  0}  →  floating upward
-//    {1,  0,  0}  →  falling toward +x
-// ──────────────────────────────────────────────────────────────────────────
-struct Gravity {
-    float x = 0.0f;
-    float y = -1.0f;
-    float z = 0.0f;
-};
 
 // ──────────────────────────────────────────────────────────────────────────
 //  SandEngine
