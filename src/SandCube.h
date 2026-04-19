@@ -27,7 +27,7 @@
 // ──────────────────────────────────────────────────────────────────────────
 class SandCube : public CubeApplication {
 public:
-    explicit SandCube(std::string serverUri);
+    explicit SandCube(std::string serverUri, bool imuDebug = false);
     bool loop() override;
 
 private:
@@ -40,7 +40,8 @@ private:
     std::unique_ptr<KeyboardTilt> keyboard_;  // lazy: only constructed if selected
 
     int     frame_        = 0;
-    Gravity lastGravity_  {0.0f, -1.0f, 0.0f};
+    bool    imuDebug_     = false;
+    Gravity lastGravity_  {0.0f, 0.0f, 1.0f};
 };
 
 #endif // SANDCUBE_H
