@@ -11,6 +11,6 @@
 // ──────────────────────────────────────────────────────────────────────────
 struct Gravity {
     float x = 0.0f;
-    float y = -1.0f;
-    float z = 0.0f;
+    float y = 0.0f;
+    float z = 1.0f;   // z+ = downward in the setPixel3D coordinate system
 };

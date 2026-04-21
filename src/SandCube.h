@@ -41,7 +41,7 @@ private:
 
     int     frame_        = 0;
     bool    imuDebug_     = false;
-    Gravity lastGravity_  {0.0f, 0.0f, 1.0f};
+    Gravity lastGravity_;
 };
 
 #endif // SANDCUBE_H

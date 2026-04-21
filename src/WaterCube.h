@@ -21,7 +21,7 @@
 // ──────────────────────────────────────────────────────────────────────────
 class WaterCube : public CubeApplication {
 public:
-    explicit WaterCube(std::string serverUri);
+    explicit WaterCube(std::string serverUri, bool imuDebug = false, bool profile = false);
     bool loop() override;
 
 private:
@@ -31,8 +31,9 @@ private:
     ImuOrientation imu_;
     std::unique_ptr<KeyboardTilt> keyboard_;
 
-    Gravity lastGravity_{0.0f, -1.0f, 0.0f};
-    int     frame_       = 0;
+    Gravity lastGravity_;
+    int     frame_               = 0;
+    bool    imuDebug_            = false;
     bool    lastRefillWasActive_ = false;
 };
 

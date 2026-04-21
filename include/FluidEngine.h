@@ -33,6 +33,10 @@ public:
     static constexpr int SIM_N  = 20;
     static constexpr int SIM_N1 = SIM_N + 1;
 
+    // Render-surface resolution (must match VoxelGrid GRID_SIZE)
+    static constexpr int RN     = 64;
+    static constexpr int RN_SQ  = RN * RN;
+
     // Staggered MAC face array sizes
     static constexpr int U_SIZE = SIM_N1 * SIM_N  * SIM_N;   // 8 400
     static constexpr int V_SIZE = SIM_N  * SIM_N1 * SIM_N;   // 8 400
@@ -48,7 +52,9 @@ public:
     void setGravity(const Gravity& g) noexcept;
     void setGravityMagnitude(float s) noexcept { gravMag_ = s; }
     void setFlipBlend(float a)        noexcept { flipBlend_ = a; }
-    void setJacobiIterations(int n)   noexcept { jacobiIter_ = n; }
+    void setPressureIterations(int n) noexcept { pressureIter_ = n; }
+    void setSORRelaxation(float w)    noexcept { sorOmega_ = w; }
+    void setProfile(bool on)          noexcept { profile_ = on; }
 
     // Re-pour a flat slab (fillLevel ∈ [0,1]) perpendicular to current gravity
     void refill(float fillLevel);
@@ -59,8 +65,13 @@ public:
     // Write water colour to the 6 outer faces via a pixel callback.
     // The callback receives (x, y, z, 0x00RRGGBB).  The caller must
     // clear/fade the canvas before calling this.
+    //
+    // Pixels are produced at full 64×64 resolution per face by splatting each
+    // continuous particle position onto per-face density buffers — this is
+    // what lets the water move sub-sim-cell (pixel-by-pixel) even though the
+    // physics grid is 20³.
     using PixelCb = std::function<void(int, int, int, uint32_t)>;
-    void renderSurface(const PixelCb& setPixel) const;
+    void renderSurface(const PixelCb& setPixel);
 
     [[nodiscard]] std::size_t particleCount() const noexcept { return particles_.size(); }
 
@@ -112,12 +123,30 @@ private:
     std::vector<float>      u_, v_, w_;              // MAC face velocities
     std::vector<float>      uOld_, vOld_, wOld_;     // pre-projection snapshot
     std::vector<float>      uW_,  vW_,  wW_;         // P2G accumulation weights
-    std::vector<float>      pressure_, pressureNext_;
+    std::vector<float>      pressure_;               // in-place SOR
     std::vector<float>      divergence_;
     std::vector<CellType>   cellType_;
 
-    Gravity  gravity_  {0.0f, -1.0f, 0.0f};
-    float    gravMag_   = 25.0f;   // cells/s²
-    float    flipBlend_ = 0.95f;   // 0 = pure PIC, 1 = pure FLIP
-    int      jacobiIter_ = 30;
+    // Cached per-frame aggregates (computed inside classifyCells)
+    Eigen::Vector3f         centroid_  = Eigen::Vector3f::Zero();  // sim-cell units
+    int                     fluidCount_ = 0;
+
+    // Per-face pixel splat buffers for rendering (RN×RN each, 6 faces)
+    // Indexed [face * RN_SQ + pixel]. Face order:
+    //   0: x-min, 1: x-max, 2: y-min, 3: y-max, 4: z-min, 5: z-max
+    std::vector<float> faceBuf_;   // size 6 * RN_SQ
+
+    Gravity  gravity_;
+    float    gravMag_      = 25.0f;   // cells/s²
+    float    flipBlend_    = 0.90f;   // 0 = pure PIC, 1 = pure FLIP
+    int      pressureIter_ = 40;      // Red-Black SOR sweeps (warm-start; 40 suffices)
+    float    sorOmega_     = 1.7f;    // SOR relaxation factor
+
+    // Profiling
+    bool     profile_       = false;
+    uint64_t profileFrame_  = 0;
+    double   profClassify_  = 0, profP2G_    = 0, profSave_  = 0;
+    double   profGrav_      = 0, profBdy_    = 0, profDiv_   = 0;
+    double   profPressure_  = 0, profProj_   = 0, profG2P_   = 0;
+    double   profAdvect_    = 0, profRender_ = 0;
 };

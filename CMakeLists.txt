@@ -82,5 +82,5 @@ target_link_libraries(WaterCube
 
 target_compile_options(WaterCube PRIVATE
     -Wall -Wextra -Wpedantic
-    -march=native -ffast-math
+    -O3 -march=native -ffast-math -funroll-loops -DNDEBUG
 )

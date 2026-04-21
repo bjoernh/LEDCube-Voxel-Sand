@@ -3,18 +3,25 @@
 
 #include <Eigen/Core>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
+#include <iostream>
 #include <numeric>
 #include <utility>
 #include <vector>
 
-// ─── Render-grid size (from VoxelGrid.h constants) ──────────────────────────
-static constexpr int RN    = GRID_SIZE;   // 64
-static constexpr int RMAX  = RN - 1;      // 63
+// ─── Render-grid size ───────────────────────────────────────────────────────
+// FluidEngine::RN and GRID_SIZE must agree; static_assert catches a mismatch.
+static_assert(FluidEngine::RN == GRID_SIZE, "FluidEngine::RN must match GRID_SIZE");
+static constexpr int RN    = FluidEngine::RN;   // 64
+static constexpr int RMAX  = RN - 1;            // 63
 
-// Mapping sim-cells → render voxels (e.g. sim cell 10 → render voxel 32)
-static constexpr float S2R = static_cast<float>(RN) / static_cast<float>(FluidEngine::SIM_N);
+// Sim-interior cell range is [1, SIM_N-1], which spans (SIM_N-2) cells.
+// Map that span onto [0, RN) in render-pixel space.
+static constexpr float SIM_TO_RENDER =
+    static_cast<float>(RN) / static_cast<float>(FluidEngine::SIM_N - 2);
 
 // ─── Shading palette ─────────────────────────────────────────────────────────
 static constexpr uint8_t SHALLOW_R = 80,  SHALLOW_G = 180, SHALLOW_B = 255;
@@ -55,10 +62,10 @@ FluidEngine::FluidEngine()
     : u_   (U_SIZE, 0.0f), v_   (V_SIZE, 0.0f), w_   (W_SIZE, 0.0f)
     , uOld_(U_SIZE, 0.0f), vOld_(V_SIZE, 0.0f), wOld_(W_SIZE, 0.0f)
     , uW_  (U_SIZE, 0.0f), vW_  (V_SIZE, 0.0f), wW_  (W_SIZE, 0.0f)
-    , pressure_    (C_SIZE, 0.0f)
-    , pressureNext_(C_SIZE, 0.0f)
-    , divergence_  (C_SIZE, 0.0f)
-    , cellType_    (C_SIZE, CellType::AIR)
+    , pressure_  (C_SIZE, 0.0f)
+    , divergence_(C_SIZE, 0.0f)
+    , cellType_  (C_SIZE, CellType::AIR)
+    , faceBuf_   (6 * RN_SQ, 0.0f)
 {
     particles_.reserve(MAX_PARTICLES);
     refill(0.40f);
@@ -117,7 +124,8 @@ void FluidEngine::refill(float fillLevel) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  classifyCells — rebuild cellType_ from particle positions each tick
+//  classifyCells — rebuild cellType_ from particle positions each tick.
+//  Also accumulates the fluid centroid (cached for the renderer's depth shade).
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidEngine::classifyCells() {
     // Solid boundary: outermost layer
@@ -139,6 +147,22 @@ void FluidEngine::classifyCells() {
         if (cellType_[cidx(ci,cj,ck)] != CellType::SOLID)
             cellType_[cidx(ci,cj,ck)] = CellType::FLUID;
     }
+
+    // Fluid-cell centroid (in sim-cell units). Used by the renderer to shade
+    // depth along the gravity axis. Folded into this O(N³) pass for free.
+    Eigen::Vector3f sum = Eigen::Vector3f::Zero();
+    int count = 0;
+    for (int k = 0; k < SIM_N; ++k)
+    for (int j = 0; j < SIM_N; ++j)
+    for (int i = 0; i < SIM_N; ++i) {
+        if (cellType_[cidx(i,j,k)] == CellType::FLUID) {
+            sum += Eigen::Vector3f(i + 0.5f, j + 0.5f, k + 0.5f);
+            ++count;
+        }
+    }
+    fluidCount_ = count;
+    centroid_   = (count > 0) ? (sum / static_cast<float>(count))
+                              : Eigen::Vector3f(SIM_N * 0.5f, SIM_N * 0.5f, SIM_N * 0.5f);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -354,20 +378,67 @@ void FluidEngine::addGravity(float dt) {
 //  enforceBoundary — zero normal velocity at all solid wall faces
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidEngine::enforceBoundary() {
+    // 1. Zero normal velocities at boundary (forces fluid not to penetrate wall)
     for (int k = 0; k < SIM_N; ++k)
     for (int j = 0; j < SIM_N; ++j) {
-        u_[uidx(0,    j, k)] = 0.0f;
-        u_[uidx(SIM_N,j, k)] = 0.0f;
+        u_[uidx(1,       j, k)] = 0.0f;
+        u_[uidx(SIM_N-1, j, k)] = 0.0f;
     }
     for (int k = 0; k < SIM_N; ++k)
     for (int i = 0; i < SIM_N; ++i) {
-        v_[vidx(i, 0,     k)] = 0.0f;
-        v_[vidx(i, SIM_N, k)] = 0.0f;
+        v_[vidx(i, 1,       k)] = 0.0f;
+        v_[vidx(i, SIM_N-1, k)] = 0.0f;
     }
     for (int j = 0; j < SIM_N; ++j)
     for (int i = 0; i < SIM_N; ++i) {
-        w_[widx(i, j, 0    )] = 0.0f;
-        w_[widx(i, j, SIM_N)] = 0.0f;
+        w_[widx(i, j, 1      )] = 0.0f;
+        w_[widx(i, j, SIM_N-1)] = 0.0f;
+    }
+
+    // 2. Free-slip: Copy tangential velocities into the solid boundary layer.
+    // This prevents particles near the walls from artificially damping out their velocity
+    // (which looks like sticky friction) due to trilinear interpolation with 0.
+
+    // x-walls (i=0 and i=SIM_N-1)
+    for (int k = 0; k < SIM_N; ++k) {
+        for (int j = 0; j <= SIM_N; ++j) {
+            v_[vidx(0,       j, k)] = v_[vidx(1,       j, k)];
+            v_[vidx(SIM_N-1, j, k)] = v_[vidx(SIM_N-2, j, k)];
+        }
+    }
+    for (int k = 0; k <= SIM_N; ++k) {
+        for (int j = 0; j < SIM_N; ++j) {
+            w_[widx(0,       j, k)] = w_[widx(1,       j, k)];
+            w_[widx(SIM_N-1, j, k)] = w_[widx(SIM_N-2, j, k)];
+        }
+    }
+
+    // y-walls (j=0 and j=SIM_N-1)
+    for (int k = 0; k < SIM_N; ++k) {
+        for (int i = 0; i <= SIM_N; ++i) {
+            u_[uidx(i, 0,       k)] = u_[uidx(i, 1,       k)];
+            u_[uidx(i, SIM_N-1, k)] = u_[uidx(i, SIM_N-2, k)];
+        }
+    }
+    for (int k = 0; k <= SIM_N; ++k) {
+        for (int i = 0; i < SIM_N; ++i) {
+            w_[widx(i, 0,       k)] = w_[widx(i, 1,       k)];
+            w_[widx(i, SIM_N-1, k)] = w_[widx(i, SIM_N-2, k)];
+        }
+    }
+
+    // z-walls (k=0 and k=SIM_N-1)
+    for (int j = 0; j < SIM_N; ++j) {
+        for (int i = 0; i <= SIM_N; ++i) {
+            u_[uidx(i, j, 0      )] = u_[uidx(i, j, 1      )];
+            u_[uidx(i, j, SIM_N-1)] = u_[uidx(i, j, SIM_N-2)];
+        }
+    }
+    for (int j = 0; j <= SIM_N; ++j) {
+        for (int i = 0; i < SIM_N; ++i) {
+            v_[vidx(i, j, 0      )] = v_[vidx(i, j, 1      )];
+            v_[vidx(i, j, SIM_N-1)] = v_[vidx(i, j, SIM_N-2)];
+        }
     }
 }
 
@@ -376,59 +447,105 @@ void FluidEngine::enforceBoundary() {
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidEngine::computeDivergence() {
     std::fill(divergence_.begin(), divergence_.end(), 0.0f);
+
+    // Track particle count per cell to detect compression (volume loss)
+    std::vector<int> pCount(C_SIZE, 0);
+    for (const auto& p : particles_) {
+        int ci = clampi(static_cast<int>(p.pos.x()), 0, SIM_N-1);
+        int cj = clampi(static_cast<int>(p.pos.y()), 0, SIM_N-1);
+        int ck = clampi(static_cast<int>(p.pos.z()), 0, SIM_N-1);
+        pCount[cidx(ci, cj, ck)]++;
+    }
+
+    // Normal rest density is 2 particles per cell. Stiffness controls how hard
+    // we push back when particles clump (which otherwise looks like volume loss).
+    const float restDensity = 2.0f;
+    const float stiffness = 2.0f;
+
     for (int k = 0; k < SIM_N; ++k)
     for (int j = 0; j < SIM_N; ++j)
     for (int i = 0; i < SIM_N; ++i) {
         if (cellType_[cidx(i,j,k)] != CellType::FLUID) continue;
-        divergence_[cidx(i,j,k)] =
-              (u_[uidx(i+1,j,k)] - u_[uidx(i,j,k)])
-            + (v_[vidx(i,j+1,k)] - v_[vidx(i,j,k)])
-            + (w_[widx(i,j,k+1)] - w_[widx(i,j,k)]);
+
+        float div = (u_[uidx(i+1,j,k)] - u_[uidx(i,j,k)])
+                  + (v_[vidx(i,j+1,k)] - v_[vidx(i,j,k)])
+                  + (w_[widx(i,j,k+1)] - w_[widx(i,j,k)]);
+
+        // Artificial expansion if cell is over-compressed
+        float err = static_cast<float>(pCount[cidx(i,j,k)]) - restDensity;
+        if (err > 0.0f) {
+            div -= stiffness * err;
+        }
+
+        divergence_[cidx(i,j,k)] = div;
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  pressureSolve — Jacobi iterations
+//  pressureSolve — Red-Black Gauss-Seidel with successive over-relaxation (SOR)
+//
+//  Replaces the previous Jacobi solver.  Red-Black colouring splits the grid
+//  into two independent sets (i+j+k even/odd); within one colour there are no
+//  same-colour neighbours, so we can update in place with the Gauss-Seidel
+//  formula.  SOR relaxation (ω ≈ 1.7) accelerates convergence by ~4–5× over
+//  Jacobi, so we run far fewer sweeps for the same residual.
 //
 //  Boundary conditions:
 //    AIR neighbours → Dirichlet p=0 (pressure_ is always 0 for AIR cells)
 //    SOLID neighbours → Neumann: excluded from the stencil (not counted)
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidEngine::pressureSolve() {
-    std::fill(pressure_.begin(),     pressure_.end(),     0.0f);
-    std::fill(pressureNext_.begin(), pressureNext_.end(), 0.0f);
+    // Warm-start: retain pressure from the previous frame for cells that are
+    // still FLUID.  Only zero AIR and SOLID cells — they act as Dirichlet/Neumann
+    // boundary conditions and must be 0 for neighbouring FLUID cells' stencils.
+    // Keeping the previous FLUID pressure reduces the residual dramatically and
+    // lets the solver converge with far fewer iterations, preventing volume loss.
+    for (int c = 0; c < C_SIZE; ++c) {
+        if (cellType_[c] != CellType::FLUID) pressure_[c] = 0.0f;
+    }
 
-    static const int di[6] = {-1, 1,  0, 0,  0, 0};
-    static const int dj[6] = { 0, 0, -1, 1,  0, 0};
-    static const int dk[6] = { 0, 0,  0, 0, -1, 1};
+    const float omega = sorOmega_;
+    const int N = SIM_N;
 
-    for (int iter = 0; iter < jacobiIter_; ++iter) {
-        for (int k = 0; k < SIM_N; ++k)
-        for (int j = 0; j < SIM_N; ++j)
-        for (int i = 0; i < SIM_N; ++i) {
-            if (cellType_[cidx(i,j,k)] != CellType::FLUID) continue;
+    auto sweepColour = [&](int parity) noexcept {
+        // Skip the outermost SOLID layer (i,j,k ∈ [1, N-2]).
+        for (int k = 1; k < N - 1; ++k)
+        for (int j = 1; j < N - 1; ++j) {
+            // Start i so that (i+j+k)&1 == parity; increment by 2.
+            int iStart = 1 + (((parity ^ j ^ k) & 1) ? 0 : 1);
+            for (int i = iStart; i < N - 1; i += 2) {
+                const int c = cidx(i, j, k);
+                if (cellType_[c] != CellType::FLUID) continue;
 
-            float sum   = 0.0f;
-            int   count = 0;
+                // 6-neighbour stencil, unrolled.
+                float sum = 0.0f;
+                int   count = 0;
 
-            for (int f = 0; f < 6; ++f) {
-                int ni = i + di[f], nj = j + dj[f], nk = k + dk[f];
-                if (ni < 0 || ni >= SIM_N || nj < 0 || nj >= SIM_N || nk < 0 || nk >= SIM_N)
-                    continue;  // out-of-bounds = solid wall → Neumann, skip
-                if (cellType_[cidx(ni,nj,nk)] == CellType::SOLID) continue;
-                // AIR: pressure_[n] = 0, still counts in denominator (Dirichlet)
-                sum += pressure_[cidx(ni,nj,nk)];
-                ++count;
-            }
+                const CellType cXm = cellType_[cidx(i-1, j,   k  )];
+                const CellType cXp = cellType_[cidx(i+1, j,   k  )];
+                const CellType cYm = cellType_[cidx(i,   j-1, k  )];
+                const CellType cYp = cellType_[cidx(i,   j+1, k  )];
+                const CellType cZm = cellType_[cidx(i,   j,   k-1)];
+                const CellType cZp = cellType_[cidx(i,   j,   k+1)];
 
-            if (count > 0) {
-                pressureNext_[cidx(i,j,k)] =
-                    (sum - divergence_[cidx(i,j,k)]) / static_cast<float>(count);
+                if (cXm != CellType::SOLID) { sum += pressure_[cidx(i-1, j,   k  )]; ++count; }
+                if (cXp != CellType::SOLID) { sum += pressure_[cidx(i+1, j,   k  )]; ++count; }
+                if (cYm != CellType::SOLID) { sum += pressure_[cidx(i,   j-1, k  )]; ++count; }
+                if (cYp != CellType::SOLID) { sum += pressure_[cidx(i,   j+1, k  )]; ++count; }
+                if (cZm != CellType::SOLID) { sum += pressure_[cidx(i,   j,   k-1)]; ++count; }
+                if (cZp != CellType::SOLID) { sum += pressure_[cidx(i,   j,   k+1)]; ++count; }
+
+                if (count > 0) {
+                    const float target = (sum - divergence_[c]) / static_cast<float>(count);
+                    pressure_[c] = (1.0f - omega) * pressure_[c] + omega * target;
+                }
             }
         }
+    };
 
-        std::swap(pressure_, pressureNext_);
-        // AIR and SOLID cells must remain 0 — maintained since we only write FLUID cells above
+    for (int iter = 0; iter < pressureIter_; ++iter) {
+        sweepColour(0);  // red
+        sweepColour(1);  // black
     }
 }
 
@@ -600,106 +717,240 @@ void FluidEngine::update(float dt) {
     // Clamp dt to avoid instability on first frame or hiccups
     dt = std::min(dt, 1.0f / 30.0f);
 
-    classifyCells();
-    transferP2G();
-    saveOldVelocities();
-    addGravity(dt);
-    enforceBoundary();
-    computeDivergence();
-    pressureSolve();
-    velocityProject();
-    enforceBoundary();  // re-apply after projection
-    transferG2P();
-    advectParticles(dt);
+    if (!profile_) {
+        classifyCells();
+        transferP2G();
+        saveOldVelocities();
+        addGravity(dt);
+        enforceBoundary();
+        computeDivergence();
+        pressureSolve();
+        velocityProject();
+        enforceBoundary();
+        transferG2P();
+        advectParticles(dt);
+        return;
+    }
+
+    // ── Profiled path: per-phase EMA (α=0.1), print summary every 60 frames ──
+    using Clk = std::chrono::steady_clock;
+    auto t0 = Clk::now();
+    auto tick = [&](double& accum) {
+        const auto now = Clk::now();
+        const double us = std::chrono::duration<double, std::micro>(now - t0).count();
+        constexpr double a = 0.1;
+        accum = (1.0 - a) * accum + a * us;
+        t0 = now;
+    };
+
+    classifyCells();       tick(profClassify_);
+    transferP2G();         tick(profP2G_);
+    saveOldVelocities();   tick(profSave_);
+    addGravity(dt);        tick(profGrav_);
+    enforceBoundary();     tick(profBdy_);
+    computeDivergence();   tick(profDiv_);
+    pressureSolve();       tick(profPressure_);
+    velocityProject();     tick(profProj_);
+    enforceBoundary();     tick(profBdy_);  // fold both boundary passes into one counter
+    transferG2P();         tick(profG2P_);
+    advectParticles(dt);   tick(profAdvect_);
+
+    if (++profileFrame_ % 60 == 0) {
+        const double phys =
+            profClassify_ + profP2G_      + profSave_ + profGrav_ +
+            profBdy_      + profDiv_      + profPressure_ + profProj_ +
+            profG2P_      + profAdvect_;
+        std::cerr << std::fixed << std::setprecision(2)
+                  << "[FluidEngine] phys=" << phys / 1000.0 << "ms"
+                  << "  cls="   << profClassify_  / 1000.0
+                  << "  p2g="   << profP2G_       / 1000.0
+                  << "  sav="   << profSave_      / 1000.0
+                  << "  grv="   << profGrav_      / 1000.0
+                  << "  bdy="   << profBdy_       / 1000.0
+                  << "  div="   << profDiv_       / 1000.0
+                  << "  pres="  << profPressure_  / 1000.0
+                  << " (" << pressureIter_ << "it/ω=" << sorOmega_ << ")"
+                  << "  prj="   << profProj_      / 1000.0
+                  << "  g2p="   << profG2P_       / 1000.0
+                  << "  adv="   << profAdvect_    / 1000.0
+                  << "  render=" << profRender_   / 1000.0
+                  << "ms  parts=" << particles_.size()
+                  << "\n";
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  renderSurface
+//  renderSurface — particle splat at full 64×64 pixel resolution per face
 //
-//  Only the 6 outer faces of the 64³ LED grid are visible.  For each outer
-//  face voxel we look up the cell in the sim (or the innermost fluid-capable
-//  layer for wall-adjacent voxels) and shade it if it is FLUID.
+//  The physics grid is 20³, but each Particle::pos is a continuous float.
+//  Rendering at pixel resolution uses the continuous positions: every
+//  particle close to a face is splatted with a small kernel into that face's
+//  64×64 density buffer.  Water thus moves pixel-by-pixel instead of
+//  snapping to sim-cell (3×3) blocks.
 //
-//  Depth is measured along the gravity axis from the centroid of all FLUID
-//  cell centres.  t=0 (shallow/bright) is at the free surface, t=1 (dark) at
-//  the farthest-down voxel.
+//  Face index order: 0:x-min 1:x-max 2:y-min 3:y-max 4:z-min 5:z-max.
+//
+//  Depth shading is still computed per rendered pixel from
+//  (pixelPos − fluidCentroid) · gravityUnit, using the centroid cached by
+//  classifyCells().
 // ─────────────────────────────────────────────────────────────────────────────
-void FluidEngine::renderSurface(const PixelCb& setPixel) const {
-    // ── Compute surface centroid in render coordinates ────────────────────
-    Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
-    int fluidCount = 0;
-    for (int k = 0; k < SIM_N; ++k)
-    for (int j = 0; j < SIM_N; ++j)
-    for (int i = 0; i < SIM_N; ++i) {
-        if (cellType_[cidx(i,j,k)] == CellType::FLUID) {
-            centroid += Eigen::Vector3f(
-                (i + 0.5f) * S2R,
-                (j + 0.5f) * S2R,
-                (k + 0.5f) * S2R);
-            ++fluidCount;
+void FluidEngine::renderSurface(const PixelCb& setPixel) {
+    using Clk = std::chrono::steady_clock;
+    const auto tRenderStart = Clk::now();
+
+    // ── Clear the 6 per-face density buffers ──
+    std::fill(faceBuf_.begin(), faceBuf_.end(), 0.0f);
+
+    // ── Splat each particle onto the faces it is close to ──
+    // splatRange: a particle farther than this from a face contributes nothing
+    //             to that face's pixel buffer (sim-cell units).
+    // kernelR:    radius of the 2-D splat kernel in render pixels.  At
+    //             SIM_TO_RENDER ≈ 3.56, one sim cell ≈ 3.56 px; R=4 gives
+    //             each particle a ~9x9 pixel footprint.
+    constexpr float splatRange    = 2.5f;
+    constexpr int   kernelR       = 4;
+    constexpr float kernelInvR2   = 1.0f / static_cast<float>(kernelR * kernelR);
+    constexpr float invSplatRange = 1.0f / splatRange;
+
+    const float nearFace = 1.0f;
+    const float farFace  = static_cast<float>(SIM_N - 1);
+
+    for (const auto& p : particles_) {
+        const float px = p.pos.x();
+        const float py = p.pos.y();
+        const float pz = p.pos.z();
+
+        const float dToFace[6] = {
+            px - nearFace,   // 0: x-min
+            farFace - px,    // 1: x-max
+            py - nearFace,   // 2: y-min
+            farFace - py,    // 3: y-max
+            pz - nearFace,   // 4: z-min
+            farFace - pz     // 5: z-max
+        };
+
+        for (int f = 0; f < 6; ++f) {
+            const float dFace = dToFace[f];
+            if (dFace >= splatRange || dFace <= 0.0f) continue;
+            const float faceW = 1.0f - dFace * invSplatRange;
+
+            // Free-axis particle coordinates (sim) for this face.
+            float sa, sb;
+            switch (f) {
+                case 0: case 1: sa = py; sb = pz; break;  // x-faces: (y, z)
+                case 2: case 3: sa = px; sb = pz; break;  // y-faces: (x, z)
+                default:        sa = px; sb = py; break;  // z-faces: (x, y)
+            }
+
+            // Continuous render-pixel position of the splat centre.
+            const float ra = (sa - 1.0f) * SIM_TO_RENDER;
+            const float rb = (sb - 1.0f) * SIM_TO_RENDER;
+            const int   ca = static_cast<int>(ra);
+            const int   cb = static_cast<int>(rb);
+
+            float* const facePix = &faceBuf_[f * RN_SQ];
+
+            for (int dv = -kernelR; dv <= kernelR; ++dv) {
+                const int pv = cb + dv;
+                if (pv < 0 || pv >= RN) continue;
+                for (int du = -kernelR; du <= kernelR; ++du) {
+                    const int pu = ca + du;
+                    if (pu < 0 || pu >= RN) continue;
+                    const float fa = static_cast<float>(pu) + 0.5f - ra;
+                    const float fb = static_cast<float>(pv) + 0.5f - rb;
+                    const float d2 = fa*fa + fb*fb;
+                    const float kw = 1.0f - d2 * kernelInvR2;
+                    if (kw <= 0.0f) continue;
+                    facePix[pv * RN + pu] += faceW * kw;
+                }
+            }
         }
     }
-    if (fluidCount > 0) centroid /= static_cast<float>(fluidCount);
 
-    // Gravity unit vector for depth projection
+    // ── Emit pixels for each face ──
+    // densityThreshold:    below this, pixel is air (not emitted).
+    // densitySurfaceUpper: between threshold and this, pixel is "surface"
+    //                     (brighter highlight); above, interior water.
+    constexpr float densityThreshold    = 0.35f;
+    constexpr float densitySurfaceUpper = 1.50f;
+
     const Eigen::Vector3f gv(gravity_.x, gravity_.y, gravity_.z);
     const float gLen = gv.norm();
-    const Eigen::Vector3f gUnit = (gLen > 1e-6f) ? gv / gLen : Eigen::Vector3f(0,-1,0);
+    const Eigen::Vector3f gUnit = (gLen > 1e-6f) ? (gv / gLen) : Eigen::Vector3f(0, 0, 1);
 
-    // Normalisation: deepest possible voxel is ~RN cells from centroid along gUnit
+    const Eigen::Vector3f centroidRender(
+        (centroid_.x() - 1.0f) * SIM_TO_RENDER,
+        (centroid_.y() - 1.0f) * SIM_TO_RENDER,
+        (centroid_.z() - 1.0f) * SIM_TO_RENDER);
     const float maxDepth = static_cast<float>(RN);
 
-    // Helper: is a sim cell adjacent to an AIR cell? (→ surface highlight)
-    auto isSurfaceCell = [&](int ci, int cj, int ck) -> bool {
-        static const int di[6]={-1,1,0,0,0,0};
-        static const int dj[6]={0,0,-1,1,0,0};
-        static const int dk[6]={0,0,0,0,-1,1};
-        for (int f = 0; f < 6; ++f) {
-            int ni=ci+di[f], nj=cj+dj[f], nk=ck+dk[f];
-            if (ni < 0 || ni >= SIM_N || nj < 0 || nj >= SIM_N || nk < 0 || nk >= SIM_N)
-                continue;
-            if (cellType_[cidx(ni,nj,nk)] == CellType::AIR) return true;
-        }
-        return false;
-    };
-
-    // Helper: shade a render voxel given sim-cell indices
-    auto place = [&](int rx, int ry, int rz, int ci, int cj, int ck) {
-        if (cellType_[cidx(ci,cj,ck)] != CellType::FLUID) return;
-        Eigen::Vector3f rpos(rx + 0.5f, ry + 0.5f, rz + 0.5f);
-        float depth = (rpos - centroid).dot(gUnit);
-        float t     = depth / maxDepth;
-        bool  surf  = isSurfaceCell(ci, cj, ck);
+    auto emitPixel = [&](int rx, int ry, int rz, float density) {
+        const Eigen::Vector3f rpos(rx + 0.5f, ry + 0.5f, rz + 0.5f);
+        const float depth = (rpos - centroidRender).dot(gUnit);
+        const float t     = depth / maxDepth;
+        const bool  surf  = density < densitySurfaceUpper;
         setPixel(rx, ry, rz, shadeWater(t, surf));
     };
 
-    // Sim cell index for a given render coordinate clamped to interior.
-    // The outer render faces map to the sim cells just inside the solid layer.
-    auto simI = [](int r) -> int {
-        return clampi(static_cast<int>(r * FluidEngine::SIM_N / RN), 1, SIM_N - 2);
-    };
-
-    // ── Top (ry = RMAX) and bottom (ry = 0) ─────────────────────────────
-    for (int rz = 0; rz <= RMAX; ++rz)
-    for (int rx = 0; rx <= RMAX; ++rx) {
-        int ci = simI(rx), ck = simI(rz);
-        place(rx, RMAX, rz, ci, SIM_N-2, ck);
-        place(rx,    0, rz, ci,        1, ck);
+    // Face 0: x-min (rx = 0), free axes (u, v) = (y, z)
+    {
+        const float* facePix = &faceBuf_[0 * RN_SQ];
+        for (int v = 0; v < RN; ++v)
+        for (int u = 0; u < RN; ++u) {
+            const float d = facePix[v * RN + u];
+            if (d >= densityThreshold) emitPixel(0, u, v, d);
+        }
+    }
+    // Face 1: x-max (rx = RMAX), free axes (u, v) = (y, z)
+    {
+        const float* facePix = &faceBuf_[1 * RN_SQ];
+        for (int v = 0; v < RN; ++v)
+        for (int u = 0; u < RN; ++u) {
+            const float d = facePix[v * RN + u];
+            if (d >= densityThreshold) emitPixel(RMAX, u, v, d);
+        }
+    }
+    // Face 2: y-min (ry = 0), free axes (u, v) = (x, z)
+    {
+        const float* facePix = &faceBuf_[2 * RN_SQ];
+        for (int v = 0; v < RN; ++v)
+        for (int u = 0; u < RN; ++u) {
+            const float d = facePix[v * RN + u];
+            if (d >= densityThreshold) emitPixel(u, 0, v, d);
+        }
+    }
+    // Face 3: y-max (ry = RMAX)
+    {
+        const float* facePix = &faceBuf_[3 * RN_SQ];
+        for (int v = 0; v < RN; ++v)
+        for (int u = 0; u < RN; ++u) {
+            const float d = facePix[v * RN + u];
+            if (d >= densityThreshold) emitPixel(u, RMAX, v, d);
+        }
+    }
+    // Face 4: z-min (rz = 0), free axes (u, v) = (x, y)
+    {
+        const float* facePix = &faceBuf_[4 * RN_SQ];
+        for (int v = 0; v < RN; ++v)
+        for (int u = 0; u < RN; ++u) {
+            const float d = facePix[v * RN + u];
+            if (d >= densityThreshold) emitPixel(u, v, 0, d);
+        }
+    }
+    // Face 5: z-max (rz = RMAX)
+    {
+        const float* facePix = &faceBuf_[5 * RN_SQ];
+        for (int v = 0; v < RN; ++v)
+        for (int u = 0; u < RN; ++u) {
+            const float d = facePix[v * RN + u];
+            if (d >= densityThreshold) emitPixel(u, v, RMAX, d);
+        }
     }
 
-    // ── Front (rz = RMAX) and back (rz = 0) ─────────────────────────────
-    for (int ry = 0; ry <= RMAX; ++ry)
-    for (int rx = 0; rx <= RMAX; ++rx) {
-        int ci = simI(rx), cj = simI(ry);
-        place(rx, ry, RMAX, ci, cj, SIM_N-2);
-        place(rx, ry,    0, ci, cj,        1);
-    }
-
-    // ── Left (rx = 0) and right (rx = RMAX) ─────────────────────────────
-    for (int ry = 0; ry <= RMAX; ++ry)
-    for (int rz = 0; rz <= RMAX; ++rz) {
-        int cj = simI(ry), ck = simI(rz);
-        place(   0, ry, rz,        1, cj, ck);
-        place(RMAX, ry, rz, SIM_N-2, cj, ck);
+    if (profile_) {
+        const double us = std::chrono::duration<double, std::micro>(
+            Clk::now() - tRenderStart).count();
+        constexpr double a = 0.1;
+        profRender_ = (1.0 - a) * profRender_ + a * us;
     }
 }

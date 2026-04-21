@@ -5,11 +5,17 @@
 
 int main(int argc, char* argv[]) {
     std::string serverUri = DEFAULTSERVERURI;
-    if (argc > 1) {
-        serverUri = argv[1];
+    bool imuDebug = false;
+    bool profile  = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string a(argv[i]);
+        if (a == "--imu-debug")      imuDebug = true;
+        else if (a == "--profile")   profile  = true;
+        else                         serverUri = a;
     }
 
-    WaterCube app(serverUri);
+    WaterCube app(serverUri, imuDebug, profile);
     app.start();
 
     while (true) {
